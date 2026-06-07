@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemma Translate GUI</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; }
+        .container { max-width: 800px; margin: auto; }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; font-weight: bold; margin-bottom: .5rem; }
+        textarea, input[type="file"] { width: 100%; }
+        textarea { height: 100px; padding: 0.5rem; }
+        button { padding: 0.5rem 1rem; background: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #task-list { margin-top: 2rem; }
+        .task-item { border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px; }
+        .progress-bar-container { width: 100%; background-color: #f3f3f3; border-radius: 4px; overflow: hidden; margin-top: 0.5rem; }
+        .progress-bar { height: 20px; background-color: #28a745; width: 0%; text-align: center; color: white; font-size: 12px; line-height: 20px; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gemma Subtitle Translator</h1>
+        <form id="upload-form">
+            <div class="form-group">
+                <label for="files">Upload .srt files (Batch Upload Supported)</label>
+                <input type="file" id="files" name="files" accept=".srt" multiple required>
+            </div>
+            <div class="form-group">
+                <label for="context">Translation Context (e.g., "This is a documentary about a plane crash. Translate 'plane' to 'letoun'.")</label>
+                <textarea id="context" name="context" placeholder="Enter context here..."></textarea>
+            </div>
+            <button type="submit">Translate</button>
+        </form>
+
+        <div id="task-list">
+            <h2>Translation Tasks</h2>
+            <div id="tasks"></div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('upload-form');
+        const tasksDiv = document.getElementById('tasks');
+        const activeTasks = new Set();
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                if (data.task_ids) {
+                    data.task_ids.forEach(taskId => {
+                        createTaskElement(taskId);
+                        activeTasks.add(taskId);
+                    });
+                    form.reset();
+                    startPolling();
+                }
+            } catch (err) {
+                console.error("Error uploading files:", err);
+                alert("Failed to start translation.");
+            }
+        });
+
+        function createTaskElement(taskId) {
+            const div = document.createElement('div');
+            div.className = 'task-item';
+            div.id = `task-${taskId}`;
+            div.innerHTML = `
+                <strong>Task ID:</strong> ${taskId} <span class="status">(Pending)</span>
+                <div class="filename"></div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progress-${taskId}">0%</div>
+                </div>
+                <div class="download-link" style="margin-top: 0.5rem; display: none;">
+                    <a href="/download/${taskId}" download>Download Translated SRT</a>
+                </div>
+            `;
+            tasksDiv.appendChild(div);
+        }
+
+        let pollingInterval = null;
+
+        function startPolling() {
+            if (pollingInterval) return;
+            pollingInterval = setInterval(pollTasks, 2000);
+        }
+
+        async function pollTasks() {
+            if (activeTasks.size === 0) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+                return;
+            }
+
+            for (const taskId of activeTasks) {
+                try {
+                    const response = await fetch(`/status/${taskId}`);
+                    const data = await response.json();
+
+                    const taskDiv = document.getElementById(`task-${taskId}`);
+                    if (!taskDiv) continue;
+
+                    const statusSpan = taskDiv.querySelector('.status');
+                    const progressDiv = document.getElementById(`progress-${taskId}`);
+                    const filenameDiv = taskDiv.querySelector('.filename');
+
+                    if (data.filename) {
+                        filenameDiv.innerText = `File: ${data.filename}`;
+                    }
+
+                    if (data.status === 'completed') {
+                        statusSpan.innerText = '(Completed)';
+                        progressDiv.style.width = '100%';
+                        progressDiv.innerText = '100%';
+                        taskDiv.querySelector('.download-link').style.display = 'block';
+                        activeTasks.delete(taskId);
+                    } else if (data.status === 'processing') {
+                        statusSpan.innerText = '(Processing)';
+                        const percent = Math.round((data.progress / data.total) * 100) || 0;
+                        progressDiv.style.width = `${percent}%`;
+                        progressDiv.innerText = `${percent}%`;
+                    } else if (data.status === 'failed') {
+                        statusSpan.innerText = '(Failed)';
+                        statusSpan.style.color = 'red';
+                        progressDiv.style.backgroundColor = 'red';
+                        activeTasks.delete(taskId);
+                    }
+                } catch (err) {
+                    console.error(`Error polling task ${taskId}:`, err);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
