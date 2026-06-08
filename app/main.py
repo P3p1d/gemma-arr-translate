@@ -88,7 +88,8 @@ async def upload_files(
     context: str = Form(""),
     model_name: str = Form(MODEL_NAME),
     temperature: float = Form(0.3),
-    system_prompt: str = Form("")
+    system_prompt: str = Form(""),
+    batch_size: int = Form(5)
 ):
     task_ids = []
     for file in files:
@@ -118,6 +119,7 @@ async def upload_files(
             model_name=model_name,
             temperature=temperature,
             system_prompt=system_prompt,
+            batch_size=batch_size,
             on_update=save_tasks
         )
 

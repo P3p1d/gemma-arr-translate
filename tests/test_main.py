@@ -32,7 +32,8 @@ def test_upload_files(mocker):
         "context": "some context",
         "model_name": "gemma:7b",
         "temperature": "0.5",
-        "system_prompt": "Translate exactly."
+        "system_prompt": "Translate exactly.",
+        "batch_size": "3"
     }
     
     response = client.post("/upload", files=files, data=upload_data)
@@ -52,6 +53,7 @@ def test_upload_files(mocker):
     assert kwargs["model_name"] == "gemma:7b"
     assert kwargs["temperature"] == 0.5
     assert kwargs["system_prompt"] == "Translate exactly."
+    assert kwargs["batch_size"] == 3
     
     # Clean up uploaded file if created
     uploaded_file = os.path.join(UPLOADS_DIR, f"{task_id}_test.srt")
