@@ -10,6 +10,7 @@ services:
       - MODEL_NAME=gemma:2b # Defaulting to 2b for initial tests; user can change it
     volumes:
       - ./app:/code/app
+      - ./data:/code/data
     depends_on:
       - ollama
 

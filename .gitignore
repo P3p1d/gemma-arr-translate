@@ -1,1 +1,22 @@
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache / testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local data / uploads / outputs
+data/
+
+# OS files
+.DS_Store
+Thumbs.db

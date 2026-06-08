@@ -1,13 +1,13 @@
 import uuid
 import os
 import asyncio
+import json
 from fastapi import FastAPI, Request, Form, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from typing import List
-from app.translator import process_translation
-
+from app.translator import process_translation, translate_text
 import httpx
 import logging
 
@@ -18,8 +18,37 @@ app = FastAPI()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma:2b")
 
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+OUTPUTS_DIR = os.path.join(DATA_DIR, "outputs")
+TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
+
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+# In-memory storage for task tracking loaded/saved to local JSON file
+tasks = {}
+
+def load_tasks():
+    global tasks
+    if os.path.exists(TASKS_FILE):
+        try:
+            with open(TASKS_FILE, "r") as f:
+                tasks.update(json.load(f))
+        except Exception as e:
+            logger.error(f"Failed to load tasks: {e}")
+
+def save_tasks():
+    try:
+        with open(TASKS_FILE, "w") as f:
+            json.dump(tasks, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save tasks: {e}")
+
 @app.on_event("startup")
 async def startup_event():
+    load_tasks()
+    
     # Attempt to pull the model if it's not present
     logger.info(f"Checking if model {MODEL_NAME} is available in Ollama at {OLLAMA_URL}...")
     try:
@@ -48,13 +77,6 @@ async def startup_event():
 
 templates = Jinja2Templates(directory="app/templates")
 
-# In-memory storage for task tracking (since persistence is not required right now)
-# Structure: { task_id: {"status": "pending"|"processing"|"completed"|"failed", "filename": str, "progress": int, "total": int, "output_file": str} }
-tasks = {}
-
-os.makedirs("/tmp/uploads", exist_ok=True)
-os.makedirs("/tmp/outputs", exist_ok=True)
-
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -63,12 +85,15 @@ async def read_root(request: Request):
 async def upload_files(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
-    context: str = Form("")
+    context: str = Form(""),
+    model_name: str = Form(MODEL_NAME),
+    temperature: float = Form(0.3),
+    system_prompt: str = Form("")
 ):
     task_ids = []
     for file in files:
         task_id = str(uuid.uuid4())
-        file_location = f"/tmp/uploads/{task_id}_{file.filename}"
+        file_location = os.path.join(UPLOADS_DIR, f"{task_id}_{file.filename}")
         content = await file.read()
         with open(file_location, "wb") as file_object:
             file_object.write(content)
@@ -78,13 +103,29 @@ async def upload_files(
             "filename": file.filename,
             "progress": 0,
             "total": 0,
-            "output_file": f"/tmp/outputs/{task_id}_{file.filename}"
+            "output_file": os.path.join(OUTPUTS_DIR, f"{task_id}_{file.filename}")
         }
         task_ids.append(task_id)
 
-        background_tasks.add_task(process_translation, task_id, file_location, context, tasks)
+        save_tasks()
+
+        background_tasks.add_task(
+            process_translation,
+            task_id,
+            file_location,
+            context,
+            tasks,
+            model_name=model_name,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            on_update=save_tasks
+        )
 
     return {"task_ids": task_ids}
+
+@app.get("/tasks")
+async def get_all_tasks():
+    return tasks
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
@@ -103,7 +144,6 @@ async def download_file(task_id: str):
 
 
 from pydantic import BaseModel
-from app.translator import translate_text
 
 class LibreTranslateRequest(BaseModel):
     q: str | List[str]

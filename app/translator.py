@@ -9,11 +9,23 @@ logger = logging.getLogger(__name__)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma:2b")
 
-async def translate_text(text: str, context: str, previous_lines: list[str]) -> str:
+async def translate_text(
+    text: str,
+    context: str,
+    previous_lines: list[str],
+    model_name: str = MODEL_NAME,
+    temperature: float = 0.3,
+    system_prompt: str = ""
+) -> str:
     """
     Translates text using the local Ollama instance with the specified context.
     """
-    prompt = f"Translate the following English subtitle text to Czech.\n\n"
+    prompt = ""
+    if system_prompt:
+        prompt += f"{system_prompt}\n\n"
+    else:
+        prompt += "Translate the following English subtitle text to Czech.\n\n"
+
     if context:
         prompt += f"Context: {context}\n\n"
 
@@ -26,11 +38,11 @@ async def translate_text(text: str, context: str, previous_lines: list[str]) -> 
     prompt += f"Text to translate:\n{text}\n\nTranslation:"
 
     payload = {
-        "model": MODEL_NAME,
+        "model": model_name,
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3 # Lower temp for more consistent translation
+            "temperature": temperature
         }
     }
 
@@ -44,11 +56,22 @@ async def translate_text(text: str, context: str, previous_lines: list[str]) -> 
         logger.error(f"Error during translation: {e}")
         return text # Fallback to original text if translation fails
 
-async def process_translation(task_id: str, file_path: str, context: str, tasks_dict: dict):
+async def process_translation(
+    task_id: str,
+    file_path: str,
+    context: str,
+    tasks_dict: dict,
+    model_name: str = MODEL_NAME,
+    temperature: float = 0.3,
+    system_prompt: str = "",
+    on_update=None
+):
     """
     Background task to parse the SRT, translate line by line, and save the output.
     """
     tasks_dict[task_id]["status"] = "processing"
+    if on_update:
+        on_update()
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -56,6 +79,8 @@ async def process_translation(task_id: str, file_path: str, context: str, tasks_
 
         subs = list(srt.parse(srt_content))
         tasks_dict[task_id]["total"] = len(subs)
+        if on_update:
+            on_update()
 
         translated_subs = []
         previous_lines = []
@@ -67,7 +92,14 @@ async def process_translation(task_id: str, file_path: str, context: str, tasks_
             context_lines = previous_lines[-3:]
 
             if original_text:
-                translated_text = await translate_text(original_text, context, context_lines)
+                translated_text = await translate_text(
+                    original_text,
+                    context,
+                    context_lines,
+                    model_name=model_name,
+                    temperature=temperature,
+                    system_prompt=system_prompt
+                )
             else:
                 translated_text = ""
 
@@ -83,6 +115,8 @@ async def process_translation(task_id: str, file_path: str, context: str, tasks_
                 previous_lines.append(f"{original_text} -> {translated_text}")
 
             tasks_dict[task_id]["progress"] = i + 1
+            if on_update:
+                on_update()
 
         # Write output file
         output_path = tasks_dict[task_id]["output_file"]
@@ -90,7 +124,12 @@ async def process_translation(task_id: str, file_path: str, context: str, tasks_
             f.write(srt.compose(translated_subs))
 
         tasks_dict[task_id]["status"] = "completed"
+        if on_update:
+            on_update()
 
     except Exception as e:
         logger.error(f"Failed to process task {task_id}: {e}")
         tasks_dict[task_id]["status"] = "failed"
+        if on_update:
+            on_update()
+

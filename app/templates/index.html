@@ -9,8 +9,9 @@
         .container { max-width: 800px; margin: auto; }
         .form-group { margin-bottom: 1rem; }
         label { display: block; font-weight: bold; margin-bottom: .5rem; }
-        textarea, input[type="file"] { width: 100%; }
+        textarea, input[type="file"], input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; }
         textarea { height: 100px; padding: 0.5rem; }
+        input[type="text"], input[type="number"] { padding: 0.5rem; }
         button { padding: 0.5rem 1rem; background: #007bff; color: white; border: none; cursor: pointer; }
         button:hover { background: #0056b3; }
         #task-list { margin-top: 2rem; }
@@ -27,10 +28,27 @@
                 <label for="files">Upload .srt files (Batch Upload Supported)</label>
                 <input type="file" id="files" name="files" accept=".srt" multiple required>
             </div>
+            
+            <div class="form-group">
+                <label for="model_name">Ollama Model Name</label>
+                <input type="text" id="model_name" name="model_name" value="gemma:2b" required>
+            </div>
+
+            <div class="form-group">
+                <label for="temperature">Temperature (0.0 = deterministic, 1.0 = creative)</label>
+                <input type="number" id="temperature" name="temperature" min="0.0" max="1.0" step="0.1" value="0.3" required>
+            </div>
+
+            <div class="form-group">
+                <label for="system_prompt">Custom System Instruction (Overrides default prompt if provided)</label>
+                <textarea id="system_prompt" name="system_prompt" placeholder="e.g., Translate the following English subtitle text to Czech. Keep context in mind."></textarea>
+            </div>
+
             <div class="form-group">
                 <label for="context">Translation Context (e.g., "This is a documentary about a plane crash. Translate 'plane' to 'letoun'.")</label>
                 <textarea id="context" name="context" placeholder="Enter context here..."></textarea>
             </div>
+            
             <button type="submit">Translate</button>
         </form>
 
@@ -44,6 +62,27 @@
         const form = document.getElementById('upload-form');
         const tasksDiv = document.getElementById('tasks');
         const activeTasks = new Set();
+
+        // Load tasks from persistence on page load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch('/tasks');
+                const tasks = await response.json();
+                Object.keys(tasks).forEach(taskId => {
+                    const task = tasks[taskId];
+                    createTaskElement(taskId);
+                    updateTaskUI(taskId, task);
+                    if (task.status === 'pending' || task.status === 'processing') {
+                        activeTasks.add(taskId);
+                    }
+                });
+                if (activeTasks.size > 0) {
+                    startPolling();
+                }
+            } catch (err) {
+                console.error("Error loading tasks:", err);
+            }
+        });
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -61,7 +100,12 @@
                         createTaskElement(taskId);
                         activeTasks.add(taskId);
                     });
-                    form.reset();
+                    // Reset form but preserve the configurations
+                    const filesInput = document.getElementById('files');
+                    const contextInput = document.getElementById('context');
+                    filesInput.value = '';
+                    contextInput.value = '';
+                    
                     startPolling();
                 }
             } catch (err) {
@@ -71,6 +115,9 @@
         });
 
         function createTaskElement(taskId) {
+            // Avoid duplicate elements if already exists
+            if (document.getElementById(`task-${taskId}`)) return;
+
             const div = document.createElement('div');
             div.className = 'task-item';
             div.id = `task-${taskId}`;
@@ -85,6 +132,43 @@
                 </div>
             `;
             tasksDiv.appendChild(div);
+        }
+
+        function updateTaskUI(taskId, data) {
+            const taskDiv = document.getElementById(`task-${taskId}`);
+            if (!taskDiv) return;
+
+            const statusSpan = taskDiv.querySelector('.status');
+            const progressDiv = document.getElementById(`progress-${taskId}`);
+            const filenameDiv = taskDiv.querySelector('.filename');
+
+            if (data.filename) {
+                filenameDiv.innerText = `File: ${data.filename}`;
+            }
+
+            if (data.status === 'completed') {
+                statusSpan.innerText = '(Completed)';
+                progressDiv.style.width = '100%';
+                progressDiv.innerText = '100%';
+                progressDiv.style.backgroundColor = '#28a745';
+                taskDiv.querySelector('.download-link').style.display = 'block';
+            } else if (data.status === 'processing') {
+                statusSpan.innerText = '(Processing)';
+                const percent = Math.round((data.progress / data.total) * 100) || 0;
+                progressDiv.style.width = `${percent}%`;
+                progressDiv.innerText = `${percent}%`;
+                progressDiv.style.backgroundColor = '#28a745';
+            } else if (data.status === 'failed') {
+                statusSpan.innerText = '(Failed)';
+                statusSpan.style.color = 'red';
+                progressDiv.style.backgroundColor = 'red';
+                progressDiv.style.width = '100%';
+                progressDiv.innerText = 'Error';
+            } else if (data.status === 'pending') {
+                statusSpan.innerText = '(Pending)';
+                progressDiv.style.width = '0%';
+                progressDiv.innerText = '0%';
+            }
         }
 
         let pollingInterval = null;
@@ -106,32 +190,9 @@
                     const response = await fetch(`/status/${taskId}`);
                     const data = await response.json();
 
-                    const taskDiv = document.getElementById(`task-${taskId}`);
-                    if (!taskDiv) continue;
+                    updateTaskUI(taskId, data);
 
-                    const statusSpan = taskDiv.querySelector('.status');
-                    const progressDiv = document.getElementById(`progress-${taskId}`);
-                    const filenameDiv = taskDiv.querySelector('.filename');
-
-                    if (data.filename) {
-                        filenameDiv.innerText = `File: ${data.filename}`;
-                    }
-
-                    if (data.status === 'completed') {
-                        statusSpan.innerText = '(Completed)';
-                        progressDiv.style.width = '100%';
-                        progressDiv.innerText = '100%';
-                        taskDiv.querySelector('.download-link').style.display = 'block';
-                        activeTasks.delete(taskId);
-                    } else if (data.status === 'processing') {
-                        statusSpan.innerText = '(Processing)';
-                        const percent = Math.round((data.progress / data.total) * 100) || 0;
-                        progressDiv.style.width = `${percent}%`;
-                        progressDiv.innerText = `${percent}%`;
-                    } else if (data.status === 'failed') {
-                        statusSpan.innerText = '(Failed)';
-                        statusSpan.style.color = 'red';
-                        progressDiv.style.backgroundColor = 'red';
+                    if (data.status === 'completed' || data.status === 'failed') {
                         activeTasks.delete(taskId);
                     }
                 } catch (err) {
