@@ -80,6 +80,7 @@ class Translator:
         
         lines = request.get("lines", [])
         target_lang = request.get("target_lang", "cs")
+        source_lang = request.get("source_lang", "en")
         
         if not lines:
             return {"translated_lines": []}
