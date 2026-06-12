@@ -52,7 +52,9 @@ def main():
                 
             # Determine new filename (replace existing lang code with target lang code)
             # Example: movie.en.srt -> movie.cs.srt
-            base_without_ext = srt_path[:-4] # remove .srt
+            
+            abs_srt_path = os.path.abspath(srt_path)
+            base_without_ext = abs_srt_path[:-4] # remove .srt
             
             if "." in os.path.basename(base_without_ext):
                 # Replace the last part (the language code)
@@ -62,10 +64,11 @@ def main():
                 new_path = f"{base_without_ext}.{TARGET_LANG}.srt"
                 
             # Write translated content to new file
-            with open(new_path, "w", encoding="utf-8") as f:
+            new_path_abs = os.path.abspath(new_path)
+            with open(new_path_abs, "w", encoding="utf-8") as f:
                 f.write(translated_srt)
                 
-            print(f"Successfully translated and saved to: {new_path}")
+            print(f"Successfully translated and saved to: {new_path_abs}")
             
             # Delete original file if we changed the filename
             # if new_path != srt_path:
