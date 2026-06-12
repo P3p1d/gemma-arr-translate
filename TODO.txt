@@ -1,0 +1,3 @@
+check if czech subs are available before sending off for inference
+
+make logs from homelab-running app more verbose and see partial results.

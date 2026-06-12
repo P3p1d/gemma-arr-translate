@@ -152,6 +152,58 @@ def test_libretranslate_languages():
     assert len(languages) == 2
     assert languages[0]["code"] == "en"
 
+def test_get_app_logs():
+    # Make sure app log exists
+    from app.main import DATA_DIR
+    log_file_path = os.path.join(DATA_DIR, "app.log")
+    with open(log_file_path, "w", encoding="utf-8") as f:
+        f.write("Line 1\nLine 2\n")
+    
+    response = client.get("/logs/app")
+    assert response.status_code == 200
+    assert "Line 1\nLine 2\n" in response.json()["logs"]
+
+def test_get_ollama_logs():
+    from app.main import DATA_DIR
+    log_file_path = os.path.join(DATA_DIR, "ollama.log")
+    with open(log_file_path, "w", encoding="utf-8") as f:
+        f.write("Ollama payload trace\n")
+    
+    response = client.get("/logs/ollama")
+    assert response.status_code == 200
+    assert "Ollama payload trace\n" in response.json()["logs"]
+
+def test_get_ollama_models(mocker):
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json = mocker.Mock(return_value={
+        "models": [{"name": "translategemma:4b", "size": 3298875707}]
+    })
+    
+    mock_get = mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["models"][0]["name"] == "translategemma:4b"
+    
+    mock_get.assert_called_once()
+
+def test_delete_ollama_model(mocker):
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json = mocker.Mock(return_value={"status": "success"})
+    
+    mock_request = mocker.patch("httpx.AsyncClient.request", return_value=mock_response)
+    
+    response = client.delete("/models/gemma:2b")
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    
+    mock_request.assert_called_once()
+    kwargs = mock_request.call_args[1]
+    assert kwargs["json"] == {"model": "gemma:2b"}
+
 # Cleanup temp data directory after tests complete
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_temp_dir():

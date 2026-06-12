@@ -18,6 +18,14 @@
         .task-item { border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px; }
         .progress-bar-container { width: 100%; background-color: #f3f3f3; border-radius: 4px; overflow: hidden; margin-top: 0.5rem; }
         .progress-bar { height: 20px; background-color: #28a745; width: 0%; text-align: center; color: white; font-size: 12px; line-height: 20px; transition: width 0.3s; }
+        .model-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; background: #fff; }
+        .model-table th, .model-table td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; font-size: 13px; }
+        .model-table th { background-color: #f1f1f1; }
+        .btn-action { padding: 0.25rem 0.5rem; border: none; cursor: pointer; color: white; font-size: 11px; margin-right: 0.25rem; border-radius: 3px; }
+        .btn-select { background-color: #007bff; }
+        .btn-select:hover { background-color: #0056b3; }
+        .btn-delete { background-color: #dc3545; }
+        .btn-delete:hover { background-color: #bd2130; }
     </style>
 </head>
 <body>
@@ -31,7 +39,7 @@
             
             <div class="form-group">
                 <label for="model_name">Ollama Model Name</label>
-                <input type="text" id="model_name" name="model_name" value="gemma:2b" required>
+                <input type="text" id="model_name" name="model_name" value="translategemma:4b" required>
             </div>
 
             <div class="form-group">
@@ -45,8 +53,8 @@
             </div>
 
             <div class="form-group">
-                <label for="system_prompt">Custom System Instruction (Overrides default prompt if provided)</label>
-                <textarea id="system_prompt" name="system_prompt" placeholder="e.g., Translate the following English subtitle text to Czech. Keep context in mind."></textarea>
+                <label for="system_prompt">System Instruction (Pre-filled with default; edit as needed)</label>
+                <textarea id="system_prompt" name="system_prompt" required>Translate the following English subtitle lines to Czech. Produce only the translation without explanations.</textarea>
             </div>
 
             <div class="form-group">
@@ -57,9 +65,33 @@
             <button type="submit">Translate</button>
         </form>
 
+        <div id="models-section" style="margin-top: 2rem; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; background: #fafafa;">
+            <h2 style="margin-top:0;">Installed Ollama Models</h2>
+            <button type="button" onclick="loadModels()" style="margin-bottom: 1rem; background: #28a745;">Refresh List</button>
+            <div id="models-list">Loading installed models...</div>
+        </div>
+
         <div id="task-list">
             <h2>Translation Tasks</h2>
             <div id="tasks"></div>
+        </div>
+
+        <div id="logs-section" style="margin-top: 3rem;">
+            <h2>System Logs</h2>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                <button type="button" onclick="fetchLogs('app')">Refresh App Logs</button>
+                <button type="button" onclick="fetchLogs('ollama')">Refresh Ollama Logs</button>
+            </div>
+            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 340px;">
+                    <h3>Application Logs</h3>
+                    <pre id="app-logs" style="background: #f8f9fa; border: 1px solid #ddd; padding: 1rem; height: 350px; overflow-y: auto; font-family: monospace; font-size: 11px; white-space: pre-wrap; margin: 0;"></pre>
+                </div>
+                <div style="flex: 1; min-width: 340px;">
+                    <h3>Ollama API Traffic Logs</h3>
+                    <pre id="ollama-logs" style="background: #f8f9fa; border: 1px solid #ddd; padding: 1rem; height: 350px; overflow-y: auto; font-family: monospace; font-size: 11px; white-space: pre-wrap; margin: 0;"></pre>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -77,7 +109,7 @@
                     const task = tasks[taskId];
                     createTaskElement(taskId);
                     updateTaskUI(taskId, task);
-                    if (task.status === 'pending' || task.status === 'processing') {
+                    if (task.status === 'pending' || task.status === 'processing' || task.status === 'pulling_model') {
                         activeTasks.add(taskId);
                     }
                 });
@@ -105,7 +137,7 @@
                         createTaskElement(taskId);
                         activeTasks.add(taskId);
                     });
-                    // Reset files and context inputs but preserve model configs
+                    // Reset files and context inputs but preserve configurations
                     document.getElementById('files').value = '';
                     document.getElementById('context').value = '';
                     
@@ -152,6 +184,7 @@
 
             if (data.status === 'completed') {
                 statusSpan.innerText = '(Completed)';
+                statusSpan.style.color = 'inherit';
                 progressDiv.style.width = '100%';
                 progressDiv.innerText = '100%';
                 progressDiv.style.backgroundColor = '#28a745';
@@ -159,8 +192,18 @@
                 if (detailDiv) {
                     detailDiv.innerText = 'Translation complete.';
                 }
+            } else if (data.status === 'pulling_model') {
+                statusSpan.innerText = '(Pulling Model...)';
+                statusSpan.style.color = '#ff8800';
+                progressDiv.style.width = '100%';
+                progressDiv.innerText = 'Downloading model...';
+                progressDiv.style.backgroundColor = '#ff8800';
+                if (detailDiv) {
+                    detailDiv.innerText = 'Model is missing locally in Ollama. Pulling model from Ollama library (this can take a few minutes, see Ollama Logs below)...';
+                }
             } else if (data.status === 'processing') {
                 statusSpan.innerText = '(Processing)';
+                statusSpan.style.color = 'inherit';
                 const percent = Math.round((data.progress / data.total) * 100) || 0;
                 progressDiv.style.width = `${percent}%`;
                 progressDiv.innerText = `${percent}%`;
@@ -177,10 +220,11 @@
                 progressDiv.style.width = '100%';
                 progressDiv.innerText = 'Error';
                 if (detailDiv) {
-                    detailDiv.innerText = 'Failed to process file.';
+                    detailDiv.innerText = 'Failed to process file. Make sure your Ollama URL and model are correct.';
                 }
             } else if (data.status === 'pending') {
                 statusSpan.innerText = '(Pending)';
+                statusSpan.style.color = 'inherit';
                 progressDiv.style.width = '0%';
                 progressDiv.innerText = '0%';
                 if (detailDiv) {
@@ -218,6 +262,106 @@
                 }
             }
         }
+
+        async function fetchLogs(type) {
+            try {
+                const response = await fetch(`/logs/${type}`);
+                const data = await response.json();
+                const element = document.getElementById(`${type}-logs`);
+                if (element) {
+                    element.textContent = data.logs;
+                    element.scrollTop = element.scrollHeight;
+                }
+            } catch (err) {
+                console.error(`Error fetching ${type} logs:`, err);
+            }
+        }
+
+        // Auto-refresh logs every 5 seconds if there are active tasks
+        setInterval(() => {
+            if (activeTasks.size > 0) {
+                fetchLogs('app');
+                fetchLogs('ollama');
+            }
+        }, 5000);
+
+        async function loadModels() {
+            const listDiv = document.getElementById("models-list");
+            listDiv.innerHTML = "<em>Loading installed models...</em>";
+            try {
+                const response = await fetch("/models");
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+                const data = await response.json();
+                const models = data.models || [];
+                if (models.length === 0) {
+                    listDiv.innerHTML = "<p>No models installed. Type a name above to auto-pull on translate.</p>";
+                    return;
+                }
+                
+                let html = '<table class="model-table">';
+                html += '<thead><tr><th>Model Name</th><th>Size</th><th>Actions</th></tr></thead><tbody>';
+                models.forEach(model => {
+                    const name = model.name;
+                    const sizeBytes = model.size || 0;
+                    let sizeStr = "Unknown";
+                    if (sizeBytes > 0) {
+                        const sizeGB = sizeBytes / (1024 * 1024 * 1024);
+                        if (sizeGB >= 1) {
+                            sizeStr = sizeGB.toFixed(2) + " GB";
+                        } else {
+                            sizeStr = (sizeBytes / (1024 * 1024)).toFixed(1) + " MB";
+                        }
+                    }
+                    
+                    html += `<tr>
+                        <td><strong>${name}</strong></td>
+                        <td>${sizeStr}</td>
+                        <td>
+                            <button type="button" class="btn-action btn-select" onclick="selectModel('${name}')">Use</button>
+                            <button type="button" class="btn-action btn-delete" onclick="deleteModel('${name}')">Delete</button>
+                        </td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                listDiv.innerHTML = html;
+            } catch (err) {
+                console.error("Error loading models:", err);
+                listDiv.innerHTML = `<p style="color: red;">Error loading models: ${err.message || err}</p>`;
+            }
+        }
+
+        function selectModel(name) {
+            document.getElementById("model_name").value = name;
+        }
+
+        async function deleteModel(name) {
+            if (!confirm(`Are you sure you want to delete model '${name}' from your local machine?`)) {
+                return;
+            }
+            try {
+                const response = await fetch(`/models/${encodeURIComponent(name)}`, {
+                    method: "DELETE"
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.error || "Failed to delete model.");
+                }
+                alert(result.message || "Model deleted successfully.");
+                loadModels();
+            } catch (err) {
+                console.error("Error deleting model:", err);
+                alert(`Error: ${err.message || err}`);
+            }
+        }
+
+        // Initial fetch on page load
+        window.addEventListener('load', () => {
+            fetchLogs('app');
+            fetchLogs('ollama');
+            loadModels();
+        });
     </script>
 </body>
 </html>

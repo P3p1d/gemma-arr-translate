@@ -1,184 +1,121 @@
-import uuid
 import os
-import asyncio
 import json
-from fastapi import FastAPI, Request, Form, UploadFile, File, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-from typing import List
-from app.translator import process_translation, translate_text
-import httpx
 import logging
-
-logger = logging.getLogger(__name__)
-
-app = FastAPI()
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-MODEL_NAME = os.getenv("MODEL_NAME", "gemma:2b")
-
-DATA_DIR = os.getenv("DATA_DIR", "./data")
-UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
-OUTPUTS_DIR = os.path.join(DATA_DIR, "outputs")
-TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
-
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(OUTPUTS_DIR, exist_ok=True)
-
-# In-memory storage for task tracking loaded/saved to local JSON file
-tasks = {}
-
-def load_tasks():
-    global tasks
-    if os.path.exists(TASKS_FILE):
-        try:
-            with open(TASKS_FILE, "r") as f:
-                tasks.update(json.load(f))
-        except Exception as e:
-            logger.error(f"Failed to load tasks: {e}")
-
-def save_tasks():
-    try:
-        with open(TASKS_FILE, "w") as f:
-            json.dump(tasks, f, indent=4)
-    except Exception as e:
-        logger.error(f"Failed to save tasks: {e}")
-
-@app.on_event("startup")
-async def startup_event():
-    load_tasks()
-    
-    # Attempt to pull the model if it's not present
-    logger.info(f"Checking if model {MODEL_NAME} is available in Ollama at {OLLAMA_URL}...")
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            # Check if model exists
-            tags_response = await client.get(f"{OLLAMA_URL}/api/tags")
-            tags_response.raise_for_status()
-            tags_data = tags_response.json()
-            models = [m.get("name") for m in tags_data.get("models", [])]
-
-            if MODEL_NAME not in models:
-                logger.info(f"Model {MODEL_NAME} not found. Pulling now... This might take a while.")
-                pull_payload = {"name": MODEL_NAME}
-                # Streaming the pull request to avoid read timeouts on large models
-                async with client.stream('POST', f"{OLLAMA_URL}/api/pull", json=pull_payload) as r:
-                    r.raise_for_status()
-                    async for line in r.aiter_lines():
-                        if line:
-                            # Log pull progress if necessary, or just consume
-                            pass
-                logger.info(f"Successfully pulled {MODEL_NAME}")
-            else:
-                logger.info(f"Model {MODEL_NAME} is already available.")
-    except Exception as e:
-        logger.error(f"Failed to check/pull model {MODEL_NAME}: {e}")
-
-templates = Jinja2Templates(directory="app/templates")
-
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/upload")
-async def upload_files(
-    background_tasks: BackgroundTasks,
-    files: List[UploadFile] = File(...),
-    context: str = Form(""),
-    model_name: str = Form(MODEL_NAME),
-    temperature: float = Form(0.3),
-    system_prompt: str = Form(""),
-    batch_size: int = Form(5)
-):
-    task_ids = []
-    for file in files:
-        task_id = str(uuid.uuid4())
-        file_location = os.path.join(UPLOADS_DIR, f"{task_id}_{file.filename}")
-        content = await file.read()
-        with open(file_location, "wb") as file_object:
-            file_object.write(content)
-
-        tasks[task_id] = {
-            "status": "pending",
-            "filename": file.filename,
-            "progress": 0,
-            "total": 0,
-            "output_file": os.path.join(OUTPUTS_DIR, f"{task_id}_{file.filename}")
-        }
-        task_ids.append(task_id)
-
-        save_tasks()
-
-        background_tasks.add_task(
-            process_translation,
-            task_id,
-            file_location,
-            context,
-            tasks,
-            model_name=model_name,
-            temperature=temperature,
-            system_prompt=system_prompt,
-            batch_size=batch_size,
-            on_update=save_tasks
-        )
-
-    return {"task_ids": task_ids}
-
-@app.get("/tasks")
-async def get_all_tasks():
-    return tasks
-
-@app.get("/status/{task_id}")
-async def get_status(task_id: str):
-    task = tasks.get(task_id)
-    if not task:
-        return JSONResponse(status_code=404, content={"error": "Task not found"})
-    return task
-
-@app.get("/download/{task_id}")
-async def download_file(task_id: str):
-    task = tasks.get(task_id)
-    if not task or task["status"] != "completed":
-        return JSONResponse(status_code=404, content={"error": "File not found or not completed"})
-
-    return FileResponse(path=task["output_file"], filename=task["filename"], media_type="text/plain")
-
-
+import asyncio
+import httpx
+import srt
+from typing import List
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-class LibreTranslateRequest(BaseModel):
-    q: str | List[str]
-    source: str = "en"
-    target: str = "cs"
-    format: str = "text"
-    api_key: str = ""
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-@app.post("/translate")
-async def libretranslate_emulation(request: LibreTranslateRequest):
-    """
-    Emulates the LibreTranslate POST /translate API for Bazarr integration.
-    """
-    texts = request.q if isinstance(request.q, list) else [request.q]
-    translated_texts = []
+app = FastAPI(title="Bazarr Subtitle Translator Brains")
 
-    for text in texts:
-        # Bazarr usually sends one line or a small chunk at a time.
-        # We don't have rolling context here since it's stateless, but it will work for basic integration.
-        translated = await translate_text(text, context="", previous_lines=[])
-        translated_texts.append(translated)
+MODAL_WORKSPACE = os.getenv("MODAL_WORKSPACE", "")
+# In a real Modal deployment, you get an endpoint URL like:
+# https://<workspace>--bazarr-translator-gemma-translator-translate.modal.run
+# If the user doesn't know it yet, they can configure it in .env after `modal deploy`
+MODAL_URL = os.getenv("MODAL_URL", "")
+API_TOKEN = os.getenv("API_TOKEN", "bazarr_brains_secret")
 
-    if isinstance(request.q, list):
-        return {"translatedText": translated_texts}
-    else:
-        return {"translatedText": translated_texts[0]}
+CHUNK_SIZE = 150 # Number of subtitle lines to send to the LLM at once
 
-@app.get("/languages")
-async def libretranslate_languages():
+class TranslateSrtRequest(BaseModel):
+    srt_content: str
+    target_lang: str = "cs"
+
+async def translate_chunk(lines: List[str], target_lang: str) -> List[str]:
+    if not MODAL_URL:
+        logger.warning("MODAL_URL is not set. Returning original lines.")
+        return lines
+        
+    headers = {
+        "Authorization": f"Bearer {API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "lines": lines,
+        "target_lang": target_lang
+    }
+    
+    try:
+        logger.info(f"Sending {len(lines)} lines to Modal... First line: {lines[0][:50]}...")
+        # Save intermediary request payload to /tmp for debugging
+        with open("/tmp/last_request.json", "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client: # Generous 10-minute timeout and follow 303 redirects from Modal
+            response = await client.post(MODAL_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            translated = data.get("translated_lines", [])
+            
+            # Save intermediary response to /tmp for debugging
+            with open("/tmp/last_response.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                
+            logger.info(f"Received {len(translated)} translated lines. First line translated: {translated[0][:50]}...")
+            
+            # Fallback if the length doesn't match
+            if len(translated) != len(lines):
+                logger.error(f"Length mismatch: Sent {len(lines)} lines, got {len(translated)} lines.")
+                # We could try to align them, but for now we fallback to returning original lines to avoid breaking SRT format entirely
+                return lines
+            return translated
+    except Exception as e:
+        logger.error(f"Error calling Modal endpoint: {e}")
+        return lines
+
+
+@app.post("/translate_srt")
+async def translate_srt_endpoint(request: TranslateSrtRequest):
     """
-    Emulates the LibreTranslate GET /languages API.
+    Accepts full SRT content, chunks it, calls Modal inference, and returns translated SRT content.
     """
-    return [
-        {"code": "en", "name": "English", "targets": ["cs"]},
-        {"code": "cs", "name": "Czech", "targets": ["en"]}
-    ]
+    srt_content = request.srt_content
+    target_lang = request.target_lang
+    
+    try:
+        subs = list(srt.parse(srt_content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse SRT: {e}")
+        
+    if not subs:
+        return {"translated_srt": srt_content}
+
+    # Extract text lines
+    lines = [sub.content for sub in subs]
+    
+    translated_lines = []
+    
+    # Process in chunks
+    for i in range(0, len(lines), CHUNK_SIZE):
+        chunk = lines[i:i + CHUNK_SIZE]
+        logger.info(f"Translating chunk {i // CHUNK_SIZE + 1}/{(len(lines) + CHUNK_SIZE - 1) // CHUNK_SIZE}...")
+        
+        # Replace newlines within a single subtitle block with a special token so the LLM treats it as one line
+        # But actually Gemma is smart enough to handle newlines if we format it right.
+        # To be safe and ensure 1-to-1 mapping, we can flatten inner newlines during translation and restore them later.
+        flattened_chunk = [line.replace("\n", " \\n ") for line in chunk]
+        
+        translated_chunk = await translate_chunk(flattened_chunk, target_lang)
+        
+        # Restore inner newlines
+        restored_chunk = [line.replace(" \\n ", "\n") for line in translated_chunk]
+        translated_lines.extend(restored_chunk)
+        
+    # Reconstruct SRT
+    for i, sub in enumerate(subs):
+        if i < len(translated_lines):
+            sub.content = translated_lines[i]
+            
+    translated_srt = srt.compose(subs)
+    
+    return {"translated_srt": translated_srt}
+
+@app.get("/")
+async def health_check():
+    return {"status": "ok", "modal_url_configured": bool(MODAL_URL)}

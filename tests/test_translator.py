@@ -1,7 +1,12 @@
 import pytest
 import os
 import srt
-from app.translator import translate_text, translate_batch, process_translation
+from app.translator import (
+    translate_text,
+    translate_batch,
+    ensure_model_available,
+    process_translation
+)
 
 @pytest.mark.asyncio
 async def test_translate_text_success(mocker):
@@ -12,7 +17,7 @@ async def test_translate_text_success(mocker):
     
     mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
     
-    res = await translate_text("Hello world", "Context message", ["Prev line"])
+    res = await translate_text("Hello world", "Context message", ["Prev line"], model_name="gemma:2b")
     assert res == "Ahoj světe"
     
     # Verify the prompt contents passed to post
@@ -44,11 +49,78 @@ async def test_translate_batch_success(mocker):
     
     mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
     
-    res = await translate_batch(["Hello, how are you?", "I'm doing well, thanks.", "Great!"], "context", [])
+    res = await translate_batch(["Hello, how are you?", "I'm doing well, thanks.", "Great!"], "context", [], model_name="gemma:2b")
     assert res == ["Ahoj, jak se máš?", "Mám se dobře, díky.", "Skvělé!"]
 
 @pytest.mark.asyncio
+async def test_translate_text_translategemma_success(mocker):
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json = mocker.Mock(return_value={"response": "Ahoj\nJak se máš?"})
+    mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
+    
+    res = await translate_text("How are you?", "", ["Hello -> Ahoj"], model_name="translategemma:4b")
+    assert res == "Jak se máš?"
+    
+    mock_post.assert_called_once()
+    prompt = mock_post.call_args[1]["json"]["prompt"]
+    assert prompt == "<<<source>>>en<<<target>>>cs<<<text>>>Hello\nHow are you?"
+
+@pytest.mark.asyncio
+async def test_translate_batch_translategemma_success(mocker):
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json = mocker.Mock(return_value={"response": "Ahoj\nJak se máš?\nMám se skvěle."})
+    mock_post = mocker.patch("httpx.AsyncClient.post", return_value=mock_response)
+    
+    res = await translate_batch(["How are you?", "I am doing great."], "", ["Hello -> Ahoj"], model_name="translategemma:4b")
+    assert res == ["Jak se máš?", "Mám se skvěle."]
+    
+    mock_post.assert_called_once()
+    prompt = mock_post.call_args[1]["json"]["prompt"]
+    assert prompt == "<<<source>>>en<<<target>>>cs<<<text>>>Hello\nHow are you?\nI am doing great."
+
+@pytest.mark.asyncio
+async def test_ensure_model_available_present(mocker):
+    # Mock GET /api/tags to return the model as available
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json = mocker.Mock(return_value={
+        "models": [{"name": "translategemma:4b"}]
+    })
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    res = await ensure_model_available("translategemma:4b")
+    assert res is True
+
+@pytest.mark.asyncio
+async def test_ensure_model_available_missing_and_pull(mocker):
+    # Mock GET /api/tags to return empty list (missing model)
+    mock_get_response = mocker.Mock()
+    mock_get_response.raise_for_status = mocker.Mock()
+    mock_get_response.json = mocker.Mock(return_value={"models": []})
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_get_response)
+    
+    # Mock client.stream POST /api/pull
+    mock_stream = mocker.MagicMock()
+    mock_stream.__aenter__.return_value.raise_for_status = mocker.Mock()
+    
+    # Setup mock iterator for lines
+    async def mock_iter():
+        yield b'{"status": "pulling layer"}'
+        yield b'{"status": "success"}'
+    
+    mock_stream.__aenter__.return_value.aiter_lines = mock_iter
+    mocker.patch("httpx.AsyncClient.stream", return_value=mock_stream)
+    
+    res = await ensure_model_available("translategemma:4b")
+    assert res is True
+
+@pytest.mark.asyncio
 async def test_process_translation_batch_success(tmp_path, mocker):
+    # Mock ensure_model_available to return True immediately
+    mocker.patch("app.translator.ensure_model_available", return_value=True)
+    
     # Mock translate_batch to return exactly the Czech translations
     mock_batch = mocker.patch(
         "app.translator.translate_batch",
@@ -95,6 +167,9 @@ World
 
 @pytest.mark.asyncio
 async def test_process_translation_batch_fallback(tmp_path, mocker):
+    # Mock ensure_model_available to return True immediately
+    mocker.patch("app.translator.ensure_model_available", return_value=True)
+    
     # Mock translate_batch to return mismatch length (triggers fallback)
     mock_batch = mocker.patch("app.translator.translate_batch", return_value=["OnlyOneTranslation"])
     # Mock translate_text for fallback line-by-line translation
