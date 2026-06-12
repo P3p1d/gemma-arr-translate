@@ -85,15 +85,19 @@ class Translator:
         if not lines:
             return {"translated_lines": []}
             
-        # Manually format the prompt using Gemma's required control tokens
-        # to avoid the restrictive vLLM jinja template crashes
-        prompt = f"<start_of_turn>user\nYou are a professional subtitle translator. Translate the following English subtitles into {target_lang}.\n"
-        prompt += "You MUST maintain the exact same number of lines and EXACTLY preserve the XML tags. Do not add any conversational text.\n\nEnglish:\n"
+        # TranslateGemma requires an extremely specific fine-tuned prompt format
+        # and standard Gemma chat control tokens to avoid hallucinating
+        prompt = (
+            f"<start_of_turn>user\n"
+            f"You are a professional {source_lang} ({source_lang}) to {target_lang} ({target_lang}) translator. "
+            f"Your goal is to accurately convey the meaning and nuances of the original {source_lang} text while adhering to {target_lang} grammar, vocabulary, and cultural sensitivities.\n"
+            f"Produce only the {target_lang} translation, without any additional explanations or commentary. Please translate the following {source_lang} text into {target_lang}:\n\n\n"
+        )
         
         for i, line in enumerate(lines):
             prompt += f"<line id=\"{i}\">{line}</line>\n"
             
-        prompt += f"\n{target_lang}:<end_of_turn>\n<start_of_turn>model\n"
+        prompt += "<end_of_turn>\n<start_of_turn>model\n"
         
         sampling_params = SamplingParams(
             temperature=0.3,
