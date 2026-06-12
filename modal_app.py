@@ -101,7 +101,8 @@ English:
             stop=["\n\n\n", f"<line id=\"{len(lines)}\">"]
         )
         
-        outputs = self.llm.generate([prompt], sampling_params)
+        messages = [{"role": "user", "content": prompt}]
+        outputs = self.llm.chat(messages, sampling_params=sampling_params)
         generated_text = outputs[0].outputs[0].text.strip()
         
         # Parse the XML output safely
