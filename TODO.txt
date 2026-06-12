@@ -1,3 +1,13 @@
-check if czech subs are available before sending off for inference
+# TODO
 
-make logs from homelab-running app more verbose and see partial results.
+## Configuration
+- Add a configuration file (e.g. `config.yaml` or `config.json`) to allow users to easily customize settings without editing Python code directly.
+- Settings to expose in config:
+  - `prompt`: The custom prompt template or translation instructions.
+  - `batch_size`: The number of lines to send to the API per request (currently hardcoded).
+  - `target_lang`: The default target language for translations.
+  - `homelab_url`: The URL of the translation API server.
+  - `modal_token`: Ensure Modal token can be read from config or environment securely.
+
+## Features
+- Investigate dynamic batch sizing to maximize API throughput.
