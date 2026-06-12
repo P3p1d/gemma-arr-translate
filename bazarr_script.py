@@ -42,7 +42,9 @@ def main():
     )
     
     try:
-        with urllib.request.urlopen(req, timeout=300) as response:
+        # Increased timeout to 3600 seconds (1 hour) to handle massive movie subtitles
+        # and the initial 3-minute Modal cold boot without disconnecting prematurely.
+        with urllib.request.urlopen(req, timeout=3600) as response:
             result = json.loads(response.read().decode("utf-8"))
             translated_srt = result.get("translated_srt", "")
             

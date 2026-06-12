@@ -11,3 +11,11 @@
 
 ## Features
 - Investigate dynamic batch sizing to maximize API throughput.
+
+## UX
+Make a tutorial describing how to set this app up and configure it. Write documentation
+
+## Misc
+
+The GPU shows about 50% utilization (but "Power" is at 80%). Could launching more tasks at once help spread the cost?
+Shorten the container-life after translation is done to preserve some compute time. Should also be configable
