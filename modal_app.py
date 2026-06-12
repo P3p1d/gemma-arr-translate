@@ -85,23 +85,29 @@ class Translator:
             return {"translated_lines": []}
             
         # Construct the prompt using XML tags which LLMs are highly trained to preserve
-        prompt = f"""You are a professional subtitle translator. Translate the following English subtitles into {target_lang}.
-You MUST maintain the exact same number of lines and EXACTLY preserve the XML tags. Do not add any conversational text.
-
-English:
-"""
+        text_to_translate = ""
         for i, line in enumerate(lines):
-            prompt += f"<line id=\"{i}\">{line}</line>\n"
+            text_to_translate += f"<line id=\"{i}\">{line}</line>\n"
             
-        prompt += f"\n{target_lang}:\n"
-        
         sampling_params = SamplingParams(
             temperature=0.3,
             max_tokens=4096,
             stop=["\n\n\n", f"<line id=\"{len(lines)}\">"]
         )
         
-        messages = [{"role": "user", "content": prompt}]
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "source_lang_code": source_lang,
+                        "target_lang_code": target_lang,
+                        "text": text_to_translate
+                    }
+                ]
+            }
+        ]
         outputs = self.llm.chat(messages, sampling_params=sampling_params)
         generated_text = outputs[0].outputs[0].text.strip()
         
